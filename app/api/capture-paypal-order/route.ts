@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPayPalAccessToken } from "@/lib/paypal";
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 import { sendPurchaseConfirmationEmail } from "@/lib/email";
 import { getPresignedDownloadUrl } from "@/lib/s3";
 import { getBookById } from "@/lib/books";
@@ -54,6 +54,8 @@ export async function GET(request: Request) {
     }
 
     try {
+      const prisma = getPrismaClient();
+
       // Save purchase to database
       await prisma.userPurchase.upsert({
         where: { paypalOrderId: token },

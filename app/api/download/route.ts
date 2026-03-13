@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 import { getPresignedDownloadUrl } from "@/lib/s3";
 import { getBookById } from "@/lib/books";
 
 export async function GET(request: Request) {
   try {
+    const prisma = getPrismaClient();
+
     const { searchParams } = new URL(request.url);
     const sessionId = searchParams.get("session_id");
 
