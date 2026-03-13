@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
-import { prisma } from "@/lib/db";
-import { sendPurchaseConfirmationEmail } from "@/lib/email";
-import { getPresignedDownloadUrl } from "@/lib/s3";
+// import { prisma } from "@/lib/db";
+// import { sendPurchaseConfirmationEmail } from "@/lib/email";
+// import { getPresignedDownloadUrl } from "@/lib/s3";
 
 export async function POST(request: Request) {
   const body = await request.text();
@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     );
   }
 
+/*
   // Handle the event
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
@@ -80,6 +81,6 @@ export async function POST(request: Request) {
       );
     }
   }
-
+*/
   return NextResponse.json({ received: true });
 }

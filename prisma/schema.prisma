@@ -9,9 +9,11 @@ datasource db {
 
 model UserPurchase {
   id              String   @id @default(cuid())
-  name            String   
-  email           String   @unique
-  stripeSessionId String   @unique
+  name            String?  
+  email           String
+  bookId          String
+  stripeSessionId String?  @unique
+  paypalOrderId   String?  @unique
   paymentStatus   String   @default("pending")
   downloadCount   Int      @default(0)
   createdAt       DateTime @default(now())

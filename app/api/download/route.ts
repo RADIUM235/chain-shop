@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getPresignedDownloadUrl } from "@/lib/s3";
+import { getBookById } from "@/lib/books";
 
 export async function GET(request: Request) {
   try {
@@ -15,8 +16,10 @@ export async function GET(request: Request) {
     }
 
     // Verify payment in database
-    const purchase = await prisma.userPurchase.findUnique({
-      where: { stripeSessionId: sessionId },
+    const purchase = await prisma.userPurchase.findFirst({
+      where: {
+        OR: [{ stripeSessionId: sessionId }, { paypalOrderId: sessionId }],
+      },
     });
 
     if (!purchase) {
@@ -33,12 +36,21 @@ export async function GET(request: Request) {
       );
     }
 
-    // Generate presigned download URL
-    const downloadUrl = await getPresignedDownloadUrl();
+    // Lookup book specific logic
+    const book = getBookById(purchase.bookId);
+    if (!book || !book.s3Key) {
+      return NextResponse.json(
+        { error: "Book file not configured" },
+        { status: 500 }
+      );
+    }
+
+    // Generate presigned download URL with the specific object key
+    const downloadUrl = await getPresignedDownloadUrl(book.s3Key);
 
     // Increment download count
     await prisma.userPurchase.update({
-      where: { stripeSessionId: sessionId },
+      where: { id: purchase.id },
       data: { downloadCount: { increment: 1 } },
     });
 
