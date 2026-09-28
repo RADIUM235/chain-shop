@@ -1,8 +1,9 @@
 import { ChainBackground } from "@/components/ChainBackground";
 
 export default function Home() {
+  // Pull the hero up under the logo so the chains reach the top of the window
   return (
-    <div className="min-h-[calc(100vh-4rem)] flex flex-col">
+    <div className="-mt-16 min-h-screen flex flex-col">
       {/* Hero Section */}
       <section className="flex-1 flex items-center justify-center relative overflow-hidden bg-white dark:bg-black transition-colors duration-300">
         <ChainBackground />
