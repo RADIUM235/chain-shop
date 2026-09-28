@@ -16,16 +16,26 @@ const SPEED = 18; // px per second the links slide along their curve
 // out a fixed distance square to it (like contour lines), so neighbouring
 // chains are the same distance apart all the way along.
 const AMPLITUDE = 200; // vertical distance from a peak to a valley
-const STEP = 320; // horizontal distance from a peak to the next valley
+// Shortest horizontal distance from a peak to the next valley. On taller
+// screens the waves are stretched further (see waveStep).
+const MIN_STEP = 320;
 // Distance between neighbouring chains, measured square to the curve
 const ROW_SPACING = 9;
 // Far from the centre the chains would bend tighter than this at the peaks
 // and valleys (or fold into sharp points), so those turns are rounded off
 const MIN_TURN = 30;
+// Each chain is one flat color picked from this gradient by where it sits
+// on screen: the first color at the bottom, the last at the top
+const GRADIENT = [
+  "#040404", "#0c0808", "#1a0f0f", "#251515", "#2f1c1c", "#3b2223",
+  "#5d2a29", "#b02923", "#fe0006", "#ff3b00", "#ff5d00", "#ff7602",
+  "#ff8b00", "#ff9f00", "#ffb738", "#ffddad", "#fffefd",
+];
 const WAVE_SPEED = 24; // px per second the wave shape travels sideways
 const SAMPLES = 200; // points per slope in the lookup table
 
 type Wave = {
+  step: number;
   xs: number[];
   ys: number[];
   nxs: number[];
@@ -36,17 +46,18 @@ type Row = {
   ys: number[];
   lens: number[];
   total: number;
+  offset: number;
 };
 
 // The rising slope of the centre curve (valley → peak) with downward unit
 // normals. The falling slope is its mirror image. A sine bends tightest right
 // at its peaks and valleys, so pushed-out rows only ever fold there.
-function sampleWave(): Wave {
-  const wave: Wave = { xs: [], ys: [], nxs: [], nys: [] };
+function sampleWave(step: number): Wave {
+  const wave: Wave = { step, xs: [], ys: [], nxs: [], nys: [] };
   const half = AMPLITUDE / 2;
-  const k = Math.PI / STEP;
+  const k = Math.PI / step;
   for (let i = 0; i <= SAMPLES; i++) {
-    const x = (i / SAMPLES) * STEP;
+    const x = (i / SAMPLES) * step;
     const slope = -half * k * Math.sin(k * x);
     const len = Math.hypot(1, slope);
     wave.xs.push(x);
@@ -57,11 +68,20 @@ function sampleWave(): Wave {
   return wave;
 }
 
+// A sine's tightest bend is at its peaks, with radius step² / (half height · π²).
+// Stretch the wave until even the outermost row bends no tighter than
+// MIN_TURN there, so no row needs rounding off and the spacing stays even.
+function waveStep(maxOffset: number) {
+  const radius = maxOffset + MIN_TURN;
+  return Math.max(MIN_STEP, Math.PI * Math.sqrt((radius * AMPLITUDE) / 2));
+}
+
 // The centre curve pushed `offset` px along its normals (positive = down).
 // Pushed far enough, a row would loop back on itself at a peak or valley, so
 // it is cut where it crosses the peak/valley line and the turn is rounded to
 // at least MIN_TURN.
 function buildRow(wave: Wave, offset: number): Row {
+  const { step } = wave;
   const px = wave.xs.map((x, i) => x + wave.nxs[i] * offset);
   const py = wave.ys.map((y, i) => y + wave.nys[i] * offset);
   // Last point still left of the valley line, first point past the peak line
@@ -69,7 +89,7 @@ function buildRow(wave: Wave, offset: number): Row {
   for (let i = 0; i <= SAMPLES; i++) if (px[i] <= 0) a = i;
   let b = SAMPLES;
   for (let i = a + 1; i <= SAMPLES; i++) {
-    if (px[i] >= STEP) {
+    if (px[i] >= step) {
       b = i;
       break;
     }
@@ -80,8 +100,8 @@ function buildRow(wave: Wave, offset: number): Row {
   };
 
   // The rising slope, with the normals kept alongside
-  let hx = [0, ...px.slice(a + 1, b), STEP];
-  let hy = [a < SAMPLES ? cross(a, 0) : py[a], ...py.slice(a + 1, b), cross(b - 1, STEP)];
+  let hx = [0, ...px.slice(a + 1, b), step];
+  let hy = [a < SAMPLES ? cross(a, 0) : py[a], ...py.slice(a + 1, b), cross(b - 1, step)];
   let hnx = [wave.nxs[a], ...wave.nxs.slice(a + 1, b), wave.nxs[b]];
   let hny = [wave.nys[a], ...wave.nys.slice(a + 1, b), wave.nys[b]];
 
@@ -90,15 +110,15 @@ function buildRow(wave: Wave, offset: number): Row {
   const lastIndex = hx.length - 1;
   let k = -1;
   for (let i = lastIndex - 1; i > 0; i--) {
-    if (hnx[i] > 1e-9 && (STEP - hx[i]) / hnx[i] >= MIN_TURN) {
+    if (hnx[i] > 1e-9 && (step - hx[i]) / hnx[i] >= MIN_TURN) {
       k = i;
       break;
     }
   }
   if (k > 0 && k < lastIndex - 1) {
-    const r = (STEP - hx[k]) / hnx[k];
+    const r = (step - hx[k]) / hnx[k];
     const cy = hy[k] + hny[k] * r;
-    const from = Math.atan2(hy[k] - cy, hx[k] - STEP);
+    const from = Math.atan2(hy[k] - cy, hx[k] - step);
     const to = -Math.PI / 2;
     const n = Math.max(1, Math.ceil(((to - from) * r) / 2));
     hx = hx.slice(0, k + 1);
@@ -107,7 +127,7 @@ function buildRow(wave: Wave, offset: number): Row {
     hny = hny.slice(0, k + 1);
     for (let j = 1; j <= n; j++) {
       const angle = from + ((to - from) * j) / n;
-      hx.push(j === n ? STEP : STEP + r * Math.cos(angle));
+      hx.push(j === n ? step : step + r * Math.cos(angle));
       hy.push(cy + r * Math.sin(angle));
       hnx.push(-Math.cos(angle));
       hny.push(-Math.sin(angle));
@@ -143,7 +163,7 @@ function buildRow(wave: Wave, offset: number): Row {
   const xs = [...hx];
   const ys = [...hy];
   for (let i = hx.length - 2; i >= 0; i--) {
-    xs.push(2 * STEP - hx[i]);
+    xs.push(2 * step - hx[i]);
     ys.push(hy[i]);
   }
 
@@ -151,7 +171,7 @@ function buildRow(wave: Wave, offset: number): Row {
   for (let i = 1; i < xs.length; i++) {
     lens.push(lens[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]));
   }
-  return { xs, ys, lens, total: lens[lens.length - 1] };
+  return { xs, ys, lens, total: lens[lens.length - 1], offset };
 }
 
 const mod = (a: number, n: number) => ((a % n) + n) % n;
@@ -161,15 +181,20 @@ const mod = (a: number, n: number) => ((a % n) + n) % n;
 const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec2 corner;
 layout(location = 1) in vec4 link; // centre x, y, direction cos, sin
-layout(location = 2) in float edgeOn; // 0 or 1
+layout(location = 2) in vec2 style; // edge-on (0 or 1), gradient position
 uniform vec2 resolution;
+uniform vec3 gradient[${GRADIENT.length}];
 uniform vec2 halfSize;
 out vec2 local;
 out float vEdgeOn;
+out vec3 vColor;
 void main() {
   local = corner * halfSize;
   vec2 p = link.xy + vec2(local.x * link.z - local.y * link.w, local.x * link.w + local.y * link.z);
-  vEdgeOn = edgeOn;
+  vEdgeOn = style.x;
+  float g = clamp(style.y, 0.0, 1.0) * ${GRADIENT.length - 1}.0;
+  int i = int(min(floor(g), ${GRADIENT.length - 2}.0));
+  vColor = mix(gradient[i], gradient[i + 1], g - float(i));
   gl_Position = vec4(p / resolution * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);
 }`;
 
@@ -177,7 +202,7 @@ const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 in vec2 local;
 in float vEdgeOn;
-uniform vec3 color;
+in vec3 vColor;
 uniform float dpr;
 uniform vec3 loop; // straight half-length, end radius, half stroke
 uniform vec2 bar; // straight half-length, end radius
@@ -194,10 +219,10 @@ void main() {
     d = length(q) - bar.y;
   }
   float a = clamp(0.5 - d * dpr, 0.0, 1.0);
-  outColor = vec4(color * a, a);
+  outColor = vec4(vColor * a, a);
 }`;
 
-const FLOATS_PER_LINK = 5;
+const FLOATS_PER_LINK = 6;
 
 function compile(gl: WebGL2RenderingContext) {
   const program = gl.createProgram();
@@ -215,9 +240,7 @@ function compile(gl: WebGL2RenderingContext) {
 }
 
 function parseColor(hex: string): [number, number, number] {
-  let h = hex.replace("#", "");
-  if (h.length === 3) h = [...h].map((c) => c + c).join("");
-  const n = parseInt(h, 16) || 0;
+  const n = parseInt(hex.slice(1), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
@@ -250,7 +273,7 @@ export function ChainBackground() {
     const uniform = (name: string) => gl.getUniformLocation(program, name);
     const resolutionLoc = uniform("resolution");
     const dprLoc = uniform("dpr");
-    const colorLoc = uniform("color");
+    gl.uniform3fv(uniform("gradient"), GRADIENT.flatMap(parseColor));
     const pad = STROKE / 2 + 1;
     gl.uniform2f(uniform("halfSize"), LINK_LENGTH / 2 + pad, LINK_WIDTH / 2 + pad);
     gl.uniform3f(uniform("loop"), (LINK_LENGTH - LINK_WIDTH) / 2, LINK_WIDTH / 2, STROKE / 2);
@@ -269,7 +292,7 @@ export function ChainBackground() {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(1, 1);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 16);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(2, 1);
 
     // Colors are premultiplied by coverage in the shader
@@ -305,18 +328,14 @@ export function ChainBackground() {
       // Enough rows either side of the centre that the outermost ones sit
       // fully off screen, even at their peaks and valleys
       const n = Math.ceil((height / 2 + AMPLITUDE / 2 + LINK_WIDTH) / ROW_SPACING);
-      const wave = sampleWave();
-      period = STEP * 2;
+      const wave = sampleWave(waveStep(n * ROW_SPACING));
+      period = wave.step * 2;
       rows = [];
       for (let r = -n; r <= n; r++) rows.push(buildRow(wave, r * ROW_SPACING));
       draw();
     };
 
     const draw = () => {
-      // Read the color every frame so a system theme switch is picked up live
-      const color = getComputedStyle(canvas).getPropertyValue("--chain").trim();
-      gl.uniform3f(colorLoc, ...parseColor(color));
-
       // Shift by whole pairs so flat/edge-on alternation never flips
       const slide = mod(time * SPEED, PITCH * 2);
       const cy = height / 2;
@@ -327,6 +346,8 @@ export function ChainBackground() {
 
       for (const row of rows) {
         const { xs, ys, lens, total } = row;
+        // Color by where the row's centre line sits on screen (0 = bottom)
+        const shade = 1 - (cy + row.offset) / height;
         const lastIndex = lens.length - 1;
         // Visible stretch of this row, in arc length along it
         const uFrom = arcAtX(row, period, -margin - shift);
@@ -364,6 +385,7 @@ export function ChainBackground() {
           links[o + 2] = dx / seg;
           links[o + 3] = dy / seg;
           links[o + 4] = k & 1;
+          links[o + 5] = shade;
         }
       }
 
@@ -385,17 +407,10 @@ export function ChainBackground() {
 
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
-    // Without the animation loop, redraw when the theme class changes
-    const themeObserver = new MutationObserver(() => reduceMotion && draw());
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
 
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
-      themeObserver.disconnect();
     };
   }, []);
 
@@ -403,7 +418,7 @@ export function ChainBackground() {
     <canvas
       ref={canvasRef}
       aria-hidden="true"
-      className="absolute inset-0 w-full h-full [--chain:#d9d9d9] dark:[--chain:#3a3a3a]"
+      className="absolute inset-0 w-full h-full"
     />
   );
 }
