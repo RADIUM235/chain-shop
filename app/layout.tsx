@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { ThemeToggle } from "@/components/ThemeToggle";
 
 export const metadata: Metadata = {
   title: "Chain Salad — Ebook Store",
@@ -24,6 +23,8 @@ export default function RootLayout({
           attribute="class"
           defaultTheme="system"
           enableSystem
+          // No toggle anymore: new key so choices saved by the old toggle are ignored
+          storageKey="theme-system"
           disableTransitionOnChange
         >
           {/* Navigation */}
@@ -35,15 +36,6 @@ export default function RootLayout({
               >
                 Chain <span className="text-black dark:text-white">Salad</span>
               </Link>
-              <div className="flex items-center gap-6">
-                <Link
-                  href="/store"
-                  className="text-sm text-black dark:text-white font-medium hover:underline transition-colors duration-300"
-                >
-                  Store
-                </Link>
-                <ThemeToggle />
-              </div>
           </div>
         </nav>
 
