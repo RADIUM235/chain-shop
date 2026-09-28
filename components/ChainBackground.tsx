@@ -38,6 +38,12 @@ const FIRE_GRADIENT = [
   "#ff8b00", "#ff9f00", "#ffb738", "#ffddad", "#fffefd",
 ];
 const FIRE_TOP = 0.8;
+// On top of that, scales around the text are dimmed one by one, by how
+// close each is to the middle of the text: black there, fading back to full
+// brightness a little beyond the text's edges
+const DIM_CENTER = 0; // brightness of the scales at the middle of the text
+const DIM_REACH_X = RADIUS * 1.5; // how far past the text's sides the fade runs
+const DIM_REACH_Y = RADIUS * 1.5; // and past its top and bottom
 const DRIFT = 24; // px per second the pattern travels sideways
 
 // A scale hides everything behind it out to just past its outer ring
@@ -67,8 +73,9 @@ const mod = (a: number, n: number) => ((a % n) + n) % n;
 const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec2 corner;
 layout(location = 1) in vec4 link; // centre x, y, direction cos, sin
-// edge-on (0 or 1), gradient position (0..1, or 2..3 for the fire gradient), depth
-layout(location = 2) in vec3 style;
+// edge-on (0 or 1), gradient position (0..1, or 2..3 for the fire gradient),
+// depth, brightness
+layout(location = 2) in vec4 style;
 uniform vec2 resolution;
 uniform vec3 gradient[${GRADIENT.length}];
 uniform vec3 fire[${FIRE_GRADIENT.length}];
@@ -89,6 +96,7 @@ void main() {
     int i = int(min(floor(g), ${GRADIENT.length - 2}.0));
     vColor = mix(gradient[i], gradient[i + 1], g - float(i));
   }
+  vColor *= style.w;
   gl_Position = vec4(p / resolution * vec2(2.0, -2.0) + vec2(-1.0, 1.0), style.z, 1.0);
 }`;
 
@@ -198,7 +206,7 @@ void main() {
   outColor = vec4(c, 1.0);
 }`;
 
-const FLOATS_PER_LINK = 7;
+const FLOATS_PER_LINK = 8;
 
 function compile(gl: WebGL2RenderingContext, vertex: string, fragment: string) {
   const program = gl.createProgram();
@@ -270,7 +278,7 @@ export function ChainBackground() {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(1, 1);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, 16);
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(2, 1);
 
     // Colors are premultiplied by coverage in the shader
@@ -295,15 +303,24 @@ export function ChainBackground() {
     gl.uniform1i(gl.getUniformLocation(compositeProgram, "scene"), 0);
     gl.uniform1i(gl.getUniformLocation(compositeProgram, "glow"), 1);
     const softenLoc = gl.getUniformLocation(compositeProgram, "soften");
-    // Vertical spans (canvas px) of the text whose rows of scales turn to fire
+    // Boxes (canvas px) of the text the scales dim around
     const textElements = [...document.querySelectorAll<HTMLElement>("[data-chain-text]")];
-    let fireBands: [number, number][] = [];
+    let textBoxes: { x: number; y: number; halfWidth: number; halfHeight: number }[] = [];
     const measureText = () => {
       const origin = canvas.getBoundingClientRect();
-      fireBands = textElements.map((element) => {
+      // One box around all the marked pieces, not counting their padding
+      let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+      for (const element of textElements) {
         const box = element.getBoundingClientRect();
-        return [box.top - origin.top, box.bottom - origin.top];
-      });
+        const style = getComputedStyle(element);
+        left = Math.min(left, box.left - origin.left + parseFloat(style.paddingLeft));
+        right = Math.max(right, box.right - origin.left - parseFloat(style.paddingRight));
+        top = Math.min(top, box.top - origin.top + parseFloat(style.paddingTop));
+        bottom = Math.max(bottom, box.bottom - origin.top - parseFloat(style.paddingBottom));
+      }
+      textBoxes = textElements.length
+        ? [{ x: (left + right) / 2, y: (top + bottom) / 2, halfWidth: (right - left) / 2, halfHeight: (bottom - top) / 2 }]
+        : [];
     };
 
     const makeTarget = () => {
@@ -415,8 +432,12 @@ export function ChainBackground() {
         const cy = row * rowHeight;
         const depth = 0.9 - (row - firstRow) * depthStep;
         const rowShade = 1 - (cy - RADIUS / 2) / height;
+        // Where a scale shows: the middle of its visible band
+        const shownY = cy - RADIUS * 0.75;
         // A row shows from the top of its outer ring down to its centre line
-        const onFire = fireBands.some(([top, bottom]) => cy - RADIUS < bottom && cy > top);
+        const onFire = textBoxes.some(
+          (box) => cy - RADIUS < box.y + box.halfHeight && cy > box.y - box.halfHeight
+        );
         const offset = (row & 1) * RADIUS + shift;
         for (let cx = offset - cellWidth; cx < width + cellWidth; cx += cellWidth) {
           if ((discCount + 1) * 3 > discs.length) {
@@ -429,6 +450,16 @@ export function ChainBackground() {
           discs[d + 1] = cy;
           // Just behind this scale's own links, in front of the row above
           discs[d + 2] = depth + depthStep / 2;
+
+          // How far this scale is from the middle of the text, 0 there and 1
+          // past its edges, across an ellipse around the text
+          let brightness = 1;
+          for (const box of textBoxes) {
+            const ax = (cx - box.x) / (box.halfWidth + DIM_REACH_X);
+            const ay = (shownY - box.y) / (box.halfHeight + DIM_REACH_Y);
+            const away = Math.min(Math.hypot(ax, ay), 1);
+            brightness = Math.min(brightness, DIM_CENTER + (1 - DIM_CENTER) * away);
+          }
 
           for (let i = 0; i < t; i += 6) {
             const x = cx + template[i];
@@ -448,6 +479,7 @@ export function ChainBackground() {
             const ring = 1 - template[i + 5] / (RINGS.length - 1);
             links[o + 5] = onFire ? 2 + ring * FIRE_TOP : PER_SCALE ? rowShade : ring;
             links[o + 6] = depth;
+            links[o + 7] = brightness;
           }
         }
       }

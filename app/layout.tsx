@@ -41,12 +41,6 @@ export default function RootLayout({
         >
         <main>{children}</main>
 
-          {/* Footer */}
-          <footer className="bg-white dark:bg-black border-t-4 border-black dark:border-white py-8 transition-colors duration-300">
-            <div className="max-w-6xl mx-auto px-6 text-center text-sm text-black dark:text-white transition-colors duration-300">
-              © {new Date().getFullYear()} Chain Salad. All rights reserved.
-            </div>
-          </footer>
         </ThemeProvider>
       </body>
     </html>
