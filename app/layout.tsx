@@ -1,10 +1,22 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains-mono",
+});
+
+// Heavy weight for the studio name
+const inter = Inter({
+  subsets: ["latin"],
+  weight: "900",
+  variable: "--font-inter",
+});
+
 export const metadata: Metadata = {
-  title: "Chain Salad — Ebook Store",
+  title: "Chain Salad",
   description:
     "Purchase and download premium ebooks on modern development practices.",
 };
@@ -15,9 +27,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className={`${jetbrainsMono.variable} ${inter.variable}`} suppressHydrationWarning>
       <body
-        className="antialiased transition-colors duration-300"
+        className={`${jetbrainsMono.className} antialiased transition-colors duration-300`}
       >
         <ThemeProvider
           attribute="class"
@@ -27,20 +39,7 @@ export default function RootLayout({
           storageKey="theme-system"
           disableTransitionOnChange
         >
-          {/* Navigation */}
-        <nav className="absolute top-0 left-0 right-0 z-50">
-          <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-              <Link
-                href="/"
-                className="text-lg font-bold text-black dark:text-white hover:underline transition-colors duration-300"
-              >
-                Chain <span className="text-black dark:text-white">Salad</span>
-              </Link>
-          </div>
-        </nav>
-
-        {/* Main content with top padding for fixed nav */}
-        <main className="pt-16">{children}</main>
+        <main>{children}</main>
 
           {/* Footer */}
           <footer className="bg-white dark:bg-black border-t-4 border-black dark:border-white py-8 transition-colors duration-300">

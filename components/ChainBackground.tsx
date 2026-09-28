@@ -12,167 +12,53 @@ const BAR = STROKE * 1.4;
 const PITCH = LINK_LENGTH * 0.6;
 const SPEED = 18; // px per second the links slide along their curve
 
-// The centre chain rides a sine wave. Every other chain is that curve pushed
-// out a fixed distance square to it (like contour lines), so neighbouring
-// chains are the same distance apart all the way along.
-const AMPLITUDE = 200; // vertical distance from a peak to a valley
-// Shortest horizontal distance from a peak to the next valley. On taller
-// screens the waves are stretched further (see waveStep).
-const MIN_STEP = 320;
-// Distance between neighbouring chains, measured square to the curve
-const ROW_SPACING = 9;
-// Far from the centre the chains would bend tighter than this at the peaks
-// and valleys (or fold into sharp points), so those turns are rounded off
-const MIN_TURN = 30;
-// Each chain is one flat color picked from this gradient by where it sits
-// on screen: the first color at the bottom, the last at the top
+// Seigaiha: overlapping "scales", each a stack of concentric half-rings. Every
+// ring is a chain, and each row of scales sits in front of the row above it.
+const RADIUS = 96; // outer ring of a scale
+const RING_SPACING = 10; // distance between the rings of a scale
+const MIN_RING = 16; // smallest ring radius
+// With PER_SCALE, each scale is one flat color picked from this gradient by
+// where it sits on screen (first color at the bottom, last at the top).
+// Otherwise every scale runs through it ring by ring: the last color on its
+// outer edge, the first at its centre.
+const PER_SCALE = false;
 const GRADIENT = [
+  "#0a122f", "#0f163c", "#1e2b7e", "#2939b5", "#3149db", "#315ae9",
+  "#2b68e5", "#2874e0", "#2582d9", "#208fda", "#139fdb", "#00add8",
+  "#10b7d2", "#16c1ba", "#1bcaa2", "#20d38a", "#25dc72", "#2ae55a",
+  "#2fee42", "#34f72a", "#3dff19", "#6eff53", "#9eff8c", "#cfffc6",
+  "#ffffff",
+];
+// Rows of scales behind text marked data-chain-text use this gradient
+// instead, ring by ring the same way, stopping at FIRE_TOP so the outer
+// rings stay orange rather than white and the (white) text reads over them
+const FIRE_GRADIENT = [
   "#040404", "#0c0808", "#1a0f0f", "#251515", "#2f1c1c", "#3b2223",
   "#5d2a29", "#b02923", "#fe0006", "#ff3b00", "#ff5d00", "#ff7602",
   "#ff8b00", "#ff9f00", "#ffb738", "#ffddad", "#fffefd",
 ];
-const WAVE_SPEED = 24; // px per second the wave shape travels sideways
-const SAMPLES = 200; // points per slope in the lookup table
+const FIRE_TOP = 0.8;
+const DRIFT = 24; // px per second the pattern travels sideways
 
-type Wave = {
-  step: number;
-  xs: number[];
-  ys: number[];
-  nxs: number[];
-  nys: number[];
-};
-type Row = {
-  xs: number[];
-  ys: number[];
-  lens: number[];
-  total: number;
-  offset: number;
-};
+// A scale hides everything behind it out to just past its outer ring
+const COVER = RADIUS + LINK_WIDTH / 2 + STROKE;
 
-// The rising slope of the centre curve (valley → peak) with downward unit
-// normals. The falling slope is its mirror image. A sine bends tightest right
-// at its peaks and valleys, so pushed-out rows only ever fold there.
-function sampleWave(step: number): Wave {
-  const wave: Wave = { step, xs: [], ys: [], nxs: [], nys: [] };
-  const half = AMPLITUDE / 2;
-  const k = Math.PI / step;
-  for (let i = 0; i <= SAMPLES; i++) {
-    const x = (i / SAMPLES) * step;
-    const slope = -half * k * Math.sin(k * x);
-    const len = Math.hypot(1, slope);
-    wave.xs.push(x);
-    wave.ys.push(half * Math.cos(k * x));
-    wave.nxs.push(-slope / len);
-    wave.nys.push(1 / len);
+const RINGS: number[] = [];
+for (let r = RADIUS; r >= MIN_RING; r -= RING_SPACING) RINGS.push(r);
+
+// Angle (from the horizontal, 0..90°) where a ring first peeks out from under
+// the scale in front of it and to the right. Links below that are never seen,
+// so they are skipped; the depth test trims the ones that are partly hidden.
+function visibleFrom(r: number) {
+  const reach = COVER - LINK_LENGTH;
+  for (let a = 0; a < Math.PI / 2; a += 0.002) {
+    const dx = r * Math.cos(a) - RADIUS;
+    const dy = r * Math.sin(a) + RADIUS / 2;
+    if (dx * dx + dy * dy >= reach * reach) return a;
   }
-  return wave;
+  return Math.PI / 2;
 }
-
-// A sine's tightest bend is at its peaks, with radius step² / (half height · π²).
-// Stretch the wave until even the outermost row bends no tighter than
-// MIN_TURN there, so no row needs rounding off and the spacing stays even.
-function waveStep(maxOffset: number) {
-  const radius = maxOffset + MIN_TURN;
-  return Math.max(MIN_STEP, Math.PI * Math.sqrt((radius * AMPLITUDE) / 2));
-}
-
-// The centre curve pushed `offset` px along its normals (positive = down).
-// Pushed far enough, a row would loop back on itself at a peak or valley, so
-// it is cut where it crosses the peak/valley line and the turn is rounded to
-// at least MIN_TURN.
-function buildRow(wave: Wave, offset: number): Row {
-  const { step } = wave;
-  const px = wave.xs.map((x, i) => x + wave.nxs[i] * offset);
-  const py = wave.ys.map((y, i) => y + wave.nys[i] * offset);
-  // Last point still left of the valley line, first point past the peak line
-  let a = 0;
-  for (let i = 0; i <= SAMPLES; i++) if (px[i] <= 0) a = i;
-  let b = SAMPLES;
-  for (let i = a + 1; i <= SAMPLES; i++) {
-    if (px[i] >= step) {
-      b = i;
-      break;
-    }
-  }
-  const cross = (i: number, x: number) => {
-    const f = (x - px[i]) / (px[i + 1] - px[i] || 1);
-    return py[i] + (py[i + 1] - py[i]) * f;
-  };
-
-  // The rising slope, with the normals kept alongside
-  let hx = [0, ...px.slice(a + 1, b), step];
-  let hy = [a < SAMPLES ? cross(a, 0) : py[a], ...py.slice(a + 1, b), cross(b - 1, step)];
-  let hnx = [wave.nxs[a], ...wave.nxs.slice(a + 1, b), wave.nxs[b]];
-  let hny = [wave.nys[a], ...wave.nys.slice(a + 1, b), wave.nys[b]];
-
-  // Peak: walk back from the top until a circle centred on the peak line and
-  // touching the row is at least MIN_TURN wide, then follow that circle over
-  const lastIndex = hx.length - 1;
-  let k = -1;
-  for (let i = lastIndex - 1; i > 0; i--) {
-    if (hnx[i] > 1e-9 && (step - hx[i]) / hnx[i] >= MIN_TURN) {
-      k = i;
-      break;
-    }
-  }
-  if (k > 0 && k < lastIndex - 1) {
-    const r = (step - hx[k]) / hnx[k];
-    const cy = hy[k] + hny[k] * r;
-    const from = Math.atan2(hy[k] - cy, hx[k] - step);
-    const to = -Math.PI / 2;
-    const n = Math.max(1, Math.ceil(((to - from) * r) / 2));
-    hx = hx.slice(0, k + 1);
-    hy = hy.slice(0, k + 1);
-    hnx = hnx.slice(0, k + 1);
-    hny = hny.slice(0, k + 1);
-    for (let j = 1; j <= n; j++) {
-      const angle = from + ((to - from) * j) / n;
-      hx.push(j === n ? step : step + r * Math.cos(angle));
-      hy.push(cy + r * Math.sin(angle));
-      hnx.push(-Math.cos(angle));
-      hny.push(-Math.sin(angle));
-    }
-  }
-
-  // Valley: the same, mirrored, with the circle above the row
-  k = -1;
-  for (let i = 1; i < hx.length - 1; i++) {
-    if (hnx[i] > 1e-9 && hx[i] / hnx[i] >= MIN_TURN) {
-      k = i;
-      break;
-    }
-  }
-  if (k > 1) {
-    const r = hx[k] / hnx[k];
-    const cy = hy[k] - hny[k] * r;
-    const from = Math.PI / 2;
-    const to = Math.atan2(hy[k] - cy, hx[k]);
-    const n = Math.max(1, Math.ceil(((from - to) * r) / 2));
-    const arcX: number[] = [];
-    const arcY: number[] = [];
-    for (let j = 0; j < n; j++) {
-      const angle = from + ((to - from) * j) / n;
-      arcX.push(j === 0 ? 0 : r * Math.cos(angle));
-      arcY.push(cy + r * Math.sin(angle));
-    }
-    hx = [...arcX, ...hx.slice(k)];
-    hy = [...arcY, ...hy.slice(k)];
-  }
-
-  // Rising slope, then the falling slope as its mirror image
-  const xs = [...hx];
-  const ys = [...hy];
-  for (let i = hx.length - 2; i >= 0; i--) {
-    xs.push(2 * step - hx[i]);
-    ys.push(hy[i]);
-  }
-
-  const lens = [0];
-  for (let i = 1; i < xs.length; i++) {
-    lens.push(lens[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]));
-  }
-  return { xs, ys, lens, total: lens[lens.length - 1], offset };
-}
+const RING_FROM = RINGS.map(visibleFrom);
 
 const mod = (a: number, n: number) => ((a % n) + n) % n;
 
@@ -181,9 +67,11 @@ const mod = (a: number, n: number) => ((a % n) + n) % n;
 const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec2 corner;
 layout(location = 1) in vec4 link; // centre x, y, direction cos, sin
-layout(location = 2) in vec2 style; // edge-on (0 or 1), gradient position
+// edge-on (0 or 1), gradient position (0..1, or 2..3 for the fire gradient), depth
+layout(location = 2) in vec3 style;
 uniform vec2 resolution;
 uniform vec3 gradient[${GRADIENT.length}];
+uniform vec3 fire[${FIRE_GRADIENT.length}];
 uniform vec2 halfSize;
 out vec2 local;
 out float vEdgeOn;
@@ -192,10 +80,16 @@ void main() {
   local = corner * halfSize;
   vec2 p = link.xy + vec2(local.x * link.z - local.y * link.w, local.x * link.w + local.y * link.z);
   vEdgeOn = style.x;
-  float g = clamp(style.y, 0.0, 1.0) * ${GRADIENT.length - 1}.0;
-  int i = int(min(floor(g), ${GRADIENT.length - 2}.0));
-  vColor = mix(gradient[i], gradient[i + 1], g - float(i));
-  gl_Position = vec4(p / resolution * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);
+  if (style.y > 1.5) {
+    float g = clamp(style.y - 2.0, 0.0, 1.0) * ${FIRE_GRADIENT.length - 1}.0;
+    int i = int(min(floor(g), ${FIRE_GRADIENT.length - 2}.0));
+    vColor = mix(fire[i], fire[i + 1], g - float(i));
+  } else {
+    float g = clamp(style.y, 0.0, 1.0) * ${GRADIENT.length - 1}.0;
+    int i = int(min(floor(g), ${GRADIENT.length - 2}.0));
+    vColor = mix(gradient[i], gradient[i + 1], g - float(i));
+  }
+  gl_Position = vec4(p / resolution * vec2(2.0, -2.0) + vec2(-1.0, 1.0), style.z, 1.0);
 }`;
 
 const FRAGMENT_SHADER = `#version 300 es
@@ -222,13 +116,95 @@ void main() {
   outColor = vec4(vColor * a, a);
 }`;
 
-const FLOATS_PER_LINK = 6;
+// Each scale's solid disc, drawn into the depth buffer only, so it hides the
+// scales behind it without painting anything
+const DISC_VERTEX_SHADER = `#version 300 es
+layout(location = 0) in vec2 corner;
+layout(location = 1) in vec3 disc; // centre x, y, depth
+uniform vec2 resolution;
+uniform float radius;
+out vec2 local;
+void main() {
+  local = corner * radius;
+  vec2 p = disc.xy + local;
+  gl_Position = vec4(p / resolution * vec2(2.0, -2.0) + vec2(-1.0, 1.0), disc.z, 1.0);
+}`;
 
-function compile(gl: WebGL2RenderingContext) {
+const DISC_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+in vec2 local;
+uniform float radius;
+out vec4 outColor;
+void main() {
+  if (length(local) > radius) discard;
+  outColor = vec4(0.0);
+}`;
+
+// Film look, applied to the finished frame: a slight softening and a glow
+// that bleeds out of the bright chains (halation)
+const SOFTEN = 0.8; // blur radius, px
+const HALATION = 0.9; // glow strength
+const HALATION_TINT = [1.0, 0.55, 0.45]; // film halation leans warm
+
+const POST_VERTEX_SHADER = `#version 300 es
+layout(location = 0) in vec2 corner;
+out vec2 uv;
+void main() {
+  uv = corner * 0.5 + 0.5;
+  gl_Position = vec4(corner, 0.0, 1.0);
+}`;
+
+// Keeps only the bright parts of the frame, as the source of the glow
+const BRIGHT_SHADER = `#version 300 es
+precision highp float;
+in vec2 uv;
+uniform sampler2D source;
+out vec4 outColor;
+void main() {
+  vec3 c = texture(source, uv).rgb;
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  outColor = vec4(c * smoothstep(0.3, 0.9, lum), 1.0);
+}`;
+
+// One direction of a Gaussian blur; run twice (across, then down)
+const BLUR_SHADER = `#version 300 es
+precision highp float;
+in vec2 uv;
+uniform sampler2D source;
+uniform vec2 dir;
+out vec4 outColor;
+void main() {
+  vec3 c = texture(source, uv).rgb * 0.2270;
+  c += (texture(source, uv + dir * 1.3846).rgb + texture(source, uv - dir * 1.3846).rgb) * 0.3162;
+  c += (texture(source, uv + dir * 3.2308).rgb + texture(source, uv - dir * 3.2308).rgb) * 0.0703;
+  outColor = vec4(c, 1.0);
+}`;
+
+const COMPOSITE_SHADER = `#version 300 es
+precision highp float;
+in vec2 uv;
+uniform sampler2D scene;
+uniform sampler2D glow;
+uniform vec2 soften; // blur radius in texture coordinates
+out vec4 outColor;
+void main() {
+  // Slight blur: centre plus a ring of eight taps
+  vec3 c = texture(scene, uv).rgb * 0.25;
+  for (int i = 0; i < 8; i++) {
+    float a = float(i) * 0.785398;
+    c += texture(scene, uv + vec2(cos(a), sin(a)) * soften).rgb * 0.09375;
+  }
+  c += texture(glow, uv).rgb * vec3(${HALATION_TINT.join(", ")}) * ${HALATION.toFixed(2)};
+  outColor = vec4(c, 1.0);
+}`;
+
+const FLOATS_PER_LINK = 7;
+
+function compile(gl: WebGL2RenderingContext, vertex: string, fragment: string) {
   const program = gl.createProgram();
   for (const [type, source] of [
-    [gl.VERTEX_SHADER, VERTEX_SHADER],
-    [gl.FRAGMENT_SHADER, FRAGMENT_SHADER],
+    [gl.VERTEX_SHADER, vertex],
+    [gl.FRAGMENT_SHADER, fragment],
   ] as const) {
     const shader = gl.createShader(type)!;
     gl.shaderSource(shader, source);
@@ -244,47 +220,49 @@ function parseColor(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-// Arc length along a row at horizontal position x (rows never double back)
-function arcAtX({ xs, lens, total }: Row, period: number, x: number) {
-  const wrap = Math.floor(x / period);
-  const local = x - wrap * period;
-  let lo = 0;
-  let hi = xs.length - 1;
-  while (hi - lo > 1) {
-    const mid = (lo + hi) >> 1;
-    if (xs[mid] <= local) lo = mid;
-    else hi = mid;
-  }
-  const f = (local - xs[lo]) / (xs[hi] - xs[lo] || 1);
-  return wrap * total + lens[lo] + (lens[hi] - lens[lo]) * f;
-}
-
 export function ChainBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const gl = canvas?.getContext("webgl2", { antialias: false });
+    const gl = canvas?.getContext("webgl2", { antialias: false, depth: false });
     // Purely decorative, so without WebGL2 the hero simply has no background
     if (!canvas || !gl) return;
 
-    const program = compile(gl);
+    const quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+    const discProgram = compile(gl, DISC_VERTEX_SHADER, DISC_FRAGMENT_SHADER);
+    gl.useProgram(discProgram);
+    const discResolutionLoc = gl.getUniformLocation(discProgram, "resolution");
+    gl.uniform1f(gl.getUniformLocation(discProgram, "radius"), COVER);
+    const discVao = gl.createVertexArray();
+    gl.bindVertexArray(discVao);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const discBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, discBuffer);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 12, 0);
+    gl.vertexAttribDivisor(1, 1);
+
+    const program = compile(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     gl.useProgram(program);
     const uniform = (name: string) => gl.getUniformLocation(program, name);
     const resolutionLoc = uniform("resolution");
     const dprLoc = uniform("dpr");
     gl.uniform3fv(uniform("gradient"), GRADIENT.flatMap(parseColor));
+    gl.uniform3fv(uniform("fire"), FIRE_GRADIENT.flatMap(parseColor));
     const pad = STROKE / 2 + 1;
     gl.uniform2f(uniform("halfSize"), LINK_LENGTH / 2 + pad, LINK_WIDTH / 2 + pad);
     gl.uniform3f(uniform("loop"), (LINK_LENGTH - LINK_WIDTH) / 2, LINK_WIDTH / 2, STROKE / 2);
     gl.uniform2f(uniform("bar"), (LINK_LENGTH - BAR) / 2, BAR / 2);
-
-    gl.bindVertexArray(gl.createVertexArray());
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const linkVao = gl.createVertexArray();
+    gl.bindVertexArray(linkVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
     const linkBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, linkBuffer);
     const stride = FLOATS_PER_LINK * 4;
@@ -292,13 +270,66 @@ export function ChainBackground() {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(1, 1);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 16);
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(2, 1);
 
     // Colors are premultiplied by coverage in the shader
-    gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LESS);
     gl.clearColor(0, 0, 0, 0);
+    gl.clearDepth(1);
+
+    // The chains are drawn into an offscreen frame, which the film pass then
+    // softens and glows on its way to the screen
+    const postVao = gl.createVertexArray();
+    gl.bindVertexArray(postVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    const brightProgram = compile(gl, POST_VERTEX_SHADER, BRIGHT_SHADER);
+    const blurProgram = compile(gl, POST_VERTEX_SHADER, BLUR_SHADER);
+    const blurStepLoc = gl.getUniformLocation(blurProgram, "dir");
+    const compositeProgram = compile(gl, POST_VERTEX_SHADER, COMPOSITE_SHADER);
+    gl.useProgram(compositeProgram);
+    gl.uniform1i(gl.getUniformLocation(compositeProgram, "scene"), 0);
+    gl.uniform1i(gl.getUniformLocation(compositeProgram, "glow"), 1);
+    const softenLoc = gl.getUniformLocation(compositeProgram, "soften");
+    // Vertical spans (canvas px) of the text whose rows of scales turn to fire
+    const textElements = [...document.querySelectorAll<HTMLElement>("[data-chain-text]")];
+    let fireBands: [number, number][] = [];
+    const measureText = () => {
+      const origin = canvas.getBoundingClientRect();
+      fireBands = textElements.map((element) => {
+        const box = element.getBoundingClientRect();
+        return [box.top - origin.top, box.bottom - origin.top];
+      });
+    };
+
+    const makeTarget = () => {
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const fbo = gl.createFramebuffer();
+      return { texture, fbo, width: 0, height: 0 };
+    };
+    type Target = ReturnType<typeof makeTarget>;
+    const sizeTarget = (target: Target, w: number, h: number) => {
+      target.width = w;
+      target.height = h;
+      gl.bindTexture(gl.TEXTURE_2D, target.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.texture, 0);
+    };
+    const scene = makeTarget();
+    const sceneDepth = gl.createRenderbuffer();
+    // The glow is worked out at quarter size: cheaper, and blurrier for free
+    const glowA = makeTarget();
+    const glowB = makeTarget();
 
     const reduceMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)"
@@ -310,9 +341,10 @@ export function ChainBackground() {
     let frame = 0;
     let time = 0;
     let last = performance.now();
-    let period = 0;
-    let rows: Row[] = [];
     let links = new Float32Array(FLOATS_PER_LINK * 50000);
+    let discs = new Float32Array(3 * 1000);
+    // One scale's links for the current frame, reused for every scale
+    let template = new Float32Array(0);
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
@@ -321,78 +353,157 @@ export function ChainBackground() {
       height = rect.height;
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
-      gl.viewport(0, 0, canvas.width, canvas.height);
+      sizeTarget(scene, canvas.width, canvas.height);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, sceneDepth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, canvas.width, canvas.height);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepth);
+      const glowWidth = Math.max(1, Math.ceil(canvas.width / 4));
+      const glowHeight = Math.max(1, Math.ceil(canvas.height / 4));
+      sizeTarget(glowA, glowWidth, glowHeight);
+      sizeTarget(glowB, glowWidth, glowHeight);
+      gl.useProgram(compositeProgram);
+      gl.uniform2f(softenLoc, (SOFTEN * dpr) / canvas.width, (SOFTEN * dpr) / canvas.height);
+      measureText();
+      gl.useProgram(discProgram);
+      gl.uniform2f(discResolutionLoc, width, height);
+      gl.useProgram(program);
       gl.uniform2f(resolutionLoc, width, height);
       gl.uniform1f(dprLoc, dpr);
-
-      // Enough rows either side of the centre that the outermost ones sit
-      // fully off screen, even at their peaks and valleys
-      const n = Math.ceil((height / 2 + AMPLITUDE / 2 + LINK_WIDTH) / ROW_SPACING);
-      const wave = sampleWave(waveStep(n * ROW_SPACING));
-      period = wave.step * 2;
-      rows = [];
-      for (let r = -n; r <= n; r++) rows.push(buildRow(wave, r * ROW_SPACING));
       draw();
     };
 
     const draw = () => {
       // Shift by whole pairs so flat/edge-on alternation never flips
       const slide = mod(time * SPEED, PITCH * 2);
-      const cy = height / 2;
-      // Every row shares the same wave, so the whole stack moves as one
-      const shift = time * WAVE_SPEED;
+
+      // Links of one scale, relative to its centre: x, y, cos, sin, edge-on,
+      // ring index. Each ring's arc length is counted from its hidden bottom point,
+      // so links run up the right side, over the top and down the left.
+      let t = 0;
+      const needed = RINGS.reduce((sum, r) => sum + Math.ceil((Math.PI * r) / PITCH) + 2, 0) * 6;
+      if (template.length < needed) template = new Float32Array(needed);
+      RINGS.forEach((r, q) => {
+        const from = (RING_FROM[q] + Math.PI / 2) * r;
+        const to = (Math.PI * 1.5 - RING_FROM[q]) * r;
+        for (let k = Math.ceil((from - slide) / PITCH); ; k++) {
+          const u = k * PITCH + slide;
+          if (u > to) break;
+          const a = u / r - Math.PI / 2;
+          const cos = Math.cos(a);
+          const sin = Math.sin(a);
+          template[t++] = r * cos;
+          template[t++] = -r * sin;
+          template[t++] = -sin;
+          template[t++] = -cos;
+          template[t++] = k & 1;
+          template[t++] = q;
+        }
+      });
+
+      const cellWidth = RADIUS * 2;
+      const rowHeight = RADIUS / 2;
+      const shift = mod(time * DRIFT, cellWidth);
+      const firstRow = -2;
+      const lastRow = Math.ceil(height / rowHeight) + 2;
+      // Lower rows sit in front: nearer depth values
+      const depthStep = 1.8 / (lastRow - firstRow + 2);
       const margin = LINK_LENGTH;
       let count = 0;
+      let discCount = 0;
 
-      for (const row of rows) {
-        const { xs, ys, lens, total } = row;
-        // Color by where the row's centre line sits on screen (0 = bottom)
-        const shade = 1 - (cy + row.offset) / height;
-        const lastIndex = lens.length - 1;
-        // Visible stretch of this row, in arc length along it
-        const uFrom = arcAtX(row, period, -margin - shift);
-        const uTo = arcAtX(row, period, width + margin - shift);
-
-        let wrap = NaN;
-        let j = 0;
-        for (let k = Math.ceil((uFrom - slide) / PITCH); ; k++) {
-          const u = k * PITCH + slide;
-          if (u > uTo) break;
-          // Links only move forward along the row, so walk the table
-          // instead of searching it
-          const w = Math.floor(u / total);
-          if (w !== wrap) {
-            wrap = w;
-            j = 0;
+      for (let row = firstRow; row <= lastRow; row++) {
+        const cy = row * rowHeight;
+        const depth = 0.9 - (row - firstRow) * depthStep;
+        const rowShade = 1 - (cy - RADIUS / 2) / height;
+        // A row shows from the top of its outer ring down to its centre line
+        const onFire = fireBands.some(([top, bottom]) => cy - RADIUS < bottom && cy > top);
+        const offset = (row & 1) * RADIUS + shift;
+        for (let cx = offset - cellWidth; cx < width + cellWidth; cx += cellWidth) {
+          if ((discCount + 1) * 3 > discs.length) {
+            const grown = new Float32Array(discs.length * 2);
+            grown.set(discs);
+            discs = grown;
           }
-          const s = u - w * total;
-          while (j < lastIndex - 1 && lens[j + 1] <= s) j++;
-          const seg = lens[j + 1] - lens[j] || 1;
-          const f = (s - lens[j]) / seg;
-          const dx = xs[j + 1] - xs[j];
-          const dy = ys[j + 1] - ys[j];
-          const y = cy + ys[j] + dy * f;
-          if (y < -margin || y > height + margin) continue;
+          const d = discCount++ * 3;
+          discs[d] = cx;
+          discs[d + 1] = cy;
+          // Just behind this scale's own links, in front of the row above
+          discs[d + 2] = depth + depthStep / 2;
 
-          if ((count + 1) * FLOATS_PER_LINK > links.length) {
-            const grown = new Float32Array(links.length * 2);
-            grown.set(links);
-            links = grown;
+          for (let i = 0; i < t; i += 6) {
+            const x = cx + template[i];
+            const y = cy + template[i + 1];
+            if (x < -margin || x > width + margin || y < -margin || y > height + margin) continue;
+            if ((count + 1) * FLOATS_PER_LINK > links.length) {
+              const grown = new Float32Array(links.length * 2);
+              grown.set(links);
+              links = grown;
+            }
+            const o = count++ * FLOATS_PER_LINK;
+            links[o] = x;
+            links[o + 1] = y;
+            links[o + 2] = template[i + 2];
+            links[o + 3] = template[i + 3];
+            links[o + 4] = template[i + 4];
+            const ring = 1 - template[i + 5] / (RINGS.length - 1);
+            links[o + 5] = onFire ? 2 + ring * FIRE_TOP : PER_SCALE ? rowShade : ring;
+            links[o + 6] = depth;
           }
-          const o = count++ * FLOATS_PER_LINK;
-          links[o] = w * period + xs[j] + dx * f + shift;
-          links[o + 1] = y;
-          links[o + 2] = dx / seg;
-          links[o + 3] = dy / seg;
-          links[o + 4] = k & 1;
-          links[o + 5] = shade;
         }
       }
 
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fbo);
+      gl.viewport(0, 0, scene.width, scene.height);
+      gl.enable(gl.BLEND);
+      gl.enable(gl.DEPTH_TEST);
+      // The link pass leaves depth writes off, and clearing obeys that mask
+      gl.depthMask(true);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      gl.useProgram(discProgram);
+      gl.bindVertexArray(discVao);
+      gl.colorMask(false, false, false, false);
+      gl.depthMask(true);
+      gl.bindBuffer(gl.ARRAY_BUFFER, discBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, discs.subarray(0, discCount * 3), gl.DYNAMIC_DRAW);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, discCount);
+
+      // Links test against the discs but don't write depth, so interlocking
+      // links on the same ring still blend over each other
+      gl.useProgram(program);
+      gl.bindVertexArray(linkVao);
+      gl.colorMask(true, true, true, true);
+      gl.depthMask(false);
       gl.bindBuffer(gl.ARRAY_BUFFER, linkBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, links.subarray(0, count * FLOATS_PER_LINK), gl.DYNAMIC_DRAW);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+
+      // Film pass
+      gl.disable(gl.BLEND);
+      gl.disable(gl.DEPTH_TEST);
+      gl.bindVertexArray(postVao);
+      const pass = (target: Target | null, source: Target) => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
+        gl.viewport(0, 0, target ? target.width : canvas.width, target ? target.height : canvas.height);
+        gl.bindTexture(gl.TEXTURE_2D, source.texture);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      };
+      gl.activeTexture(gl.TEXTURE0);
+      gl.useProgram(brightProgram);
+      pass(glowA, scene);
+      gl.useProgram(blurProgram);
+      // Two rounds of blur, spreading wider the second time
+      for (const spread of [1, 2.5]) {
+        gl.uniform2f(blurStepLoc, spread / glowA.width, 0);
+        pass(glowB, glowA);
+        gl.uniform2f(blurStepLoc, 0, spread / glowA.height);
+        pass(glowA, glowB);
+      }
+      gl.useProgram(compositeProgram);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, glowA.texture);
+      gl.activeTexture(gl.TEXTURE0);
+      pass(null, scene);
     };
 
     const tick = (now: number) => {
@@ -407,6 +518,12 @@ export function ChainBackground() {
 
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
+    for (const element of textElements) observer.observe(element);
+    // The text may move once the web font has loaded
+    document.fonts.ready.then(() => {
+      measureText();
+      if (reduceMotion) draw();
+    });
 
     return () => {
       cancelAnimationFrame(frame);
